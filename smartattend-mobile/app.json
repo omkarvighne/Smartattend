@@ -1,0 +1,42 @@
+{
+  "expo": {
+    "name": "SmartAttend AI",
+    "slug": "smartattend-ai",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#6366f1"
+    },
+    "scheme": "smartattend",
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.smartattend.ai"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#6366f1"
+      },
+      "package": "com.smartattend.ai",
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.INTERNET"
+      ]
+    },
+    "plugins": [
+      "expo-router",
+      "expo-camera",
+      [
+        "expo-barcode-scanner",
+        { "cameraPermission": "Allow SmartAttend to use the camera to scan QR codes and verify your face." }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
