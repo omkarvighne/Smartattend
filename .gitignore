@@ -1,3 +1,20 @@
-node_modules/
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
 .env
+*.egg-info/
+.deepface/
+
+# Node
+node_modules/
 .next/
+.expo/
+
+# OS
+.DS_Store
+
+# Build
+dist/
+build/
