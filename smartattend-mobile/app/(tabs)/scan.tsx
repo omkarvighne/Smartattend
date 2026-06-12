@@ -1,279 +1,325 @@
-import { useState, useRef, useEffect } from 'react'
-import {
-  View, Text, StyleSheet, TouchableOpacity, Alert,
-  ActivityIndicator, Dimensions, Animated
-} from 'react-native'
+import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native'
 import { CameraView, useCameraPermissions } from 'expo-camera'
+import { useState, useRef } from 'react'
 import { Ionicons } from '@expo/vector-icons'
-import { LinearGradient } from 'expo-linear-gradient'
-import * as Haptics from 'expo-haptics'
-import { useMutation } from '@tanstack/react-query'
-import { attendanceApi } from '../../src/lib/api'
-import { Colors, Radius } from '../../src/lib/theme'
+import { attendanceApi } from '@/lib/api'
+import { Colors, Radius } from '@/lib/theme'
 
-const { width } = Dimensions.get('window')
-const SCAN_SIZE = width * 0.7
-
-type Step = 'scan' | 'face' | 'verifying' | 'success' | 'fail'
+type ScanState = 'idle' | 'scanning' | 'processing' | 'face_ready' | 'face_verifying' | 'success' | 'error'
 
 export default function ScanScreen() {
   const [permission, requestPermission] = useCameraPermissions()
-  const [step, setStep] = useState<Step>('scan')
-  const [scannedToken, setScannedToken] = useState('')
-  const [scanLock, setScanLock] = useState(false)
+  const [scanState, setScanState] = useState<ScanState>('idle')
   const [message, setMessage] = useState('')
-  const scanLineAnim = useRef(new Animated.Value(0)).current
+  const lastScanned = useRef<string | null>(null)
+  const sessionTokenRef = useRef<string | null>(null)
   const cameraRef = useRef<CameraView>(null)
 
-  // Animate scan line
-  useEffect(() => {
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(scanLineAnim, { toValue: 1, duration: 2000, useNativeDriver: true }),
-        Animated.timing(scanLineAnim, { toValue: 0, duration: 2000, useNativeDriver: true }),
-      ])
-    )
-    loop.start()
-    return () => loop.stop()
-  }, [])
+  // Step 1: QR code scanned
+  const handleBarCode = async ({ data }: { data: string }) => {
+    if (data === lastScanned.current || scanState === 'processing') return
+    lastScanned.current = data
 
-  const markMutation = useMutation({
-    mutationFn: (token: string) => {
-      const mockEmbedding = Array.from({ length: 512 }, () => Math.random() * 2 - 1)
-      return attendanceApi.mark(token, mockEmbedding).then(r => r.data)
-    },
-    onSuccess: (data) => {
-      if (data.success) {
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
-        setMessage(data.message || 'Attendance marked!')
-        setStep('success')
-      } else {
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error)
-        setMessage(data.message || 'Verification failed')
-        setStep('fail')
-      }
-    },
-    onError: (e: any) => {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error)
-      setMessage(e?.response?.data?.detail || 'Something went wrong')
-      setStep('fail')
-    },
-  })
+    // Extract token
+    let sessionToken = data
+    if (data.includes('token=')) {
+      sessionToken = data.split('token=')[1]
+    }
 
-  const handleQRScanned = ({ data }: { data: string }) => {
-    if (scanLock || step !== 'scan') return
-    setScanLock(true)
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
+    sessionTokenRef.current = sessionToken
+    // Move to face scan step
+    setScanState('face_ready')
+  }
 
-    // Extract token from URL or use raw value
-    let token = data
+  // Step 2: Face verification
+  const startFaceVerify = async () => {
+    setScanState('face_verifying')
+    setMessage('Scanning face...')
+  
     try {
-      const url = new URL(data)
-      token = url.searchParams.get('token') || data
-    } catch { /* raw token */ }
-
-    setScannedToken(token)
-    setStep('face')
-  }
-
-  const startFaceVerification = () => {
-    setStep('verifying')
-    // Simulate face capture — replace with real FaceDetector in production
+      const photo = await cameraRef.current?.takePictureAsync({
+        quality: 0.7,
+        base64: false,
+        skipProcessing: true,
+      })
+  
+      if (!photo?.uri) throw new Error('Camera capture failed')
+  
+      setMessage('Verifying face...')
+      await attendanceApi.verifyAndMark(sessionTokenRef.current!, photo.uri)
+  
+      setScanState('success')
+      setMessage('Attendance marked successfully!')
+    } catch (err: any) {
+      setScanState('error')
+      setMessage(err.message ?? 'Face verification failed')
+    }
+  
     setTimeout(() => {
-      markMutation.mutate(scannedToken)
-    }, 2000)
+      setScanState('idle')
+      setMessage('')
+      lastScanned.current = null
+      sessionTokenRef.current = null
+    }, 3000)
   }
 
-  const reset = () => {
-    setStep('scan')
-    setScannedToken('')
-    setScanLock(false)
-    setMessage('')
+  const startScanning = () => {
+    setScanState('scanning')
+    lastScanned.current = null
   }
 
   if (!permission) return <View style={styles.container} />
 
   if (!permission.granted) {
     return (
-      <View style={[styles.container, styles.centered]}>
-        <Ionicons name="camera-outline" size={56} color={Colors.textTertiary} />
-        <Text style={styles.permTitle}>Camera Permission Required</Text>
-        <Text style={styles.permSub}>SmartAttend needs camera access to scan QR codes and verify your face.</Text>
-        <TouchableOpacity style={styles.permBtn} onPress={requestPermission}>
-          <Text style={styles.permBtnText}>Grant Camera Access</Text>
+      <View style={styles.center}>
+        <Ionicons name="camera-outline" size={64} color={Colors.textTertiary} />
+        <Text style={styles.permTitle}>Camera Access Needed</Text>
+        <Text style={styles.permSub}>We need camera permission to scan QR codes.</Text>
+        <TouchableOpacity style={styles.permButton} onPress={requestPermission}>
+          <Text style={styles.permButtonText}>Grant Permission</Text>
         </TouchableOpacity>
       </View>
     )
   }
 
-  // ── Success screen ──────────────────────────────────────────────────
-  if (step === 'success') {
-    return (
-      <View style={[styles.container, styles.centered, { backgroundColor: '#f0fdf4' }]}>
-        <View style={styles.resultIcon}>
-          <Ionicons name="checkmark-circle" size={72} color={Colors.success} />
-        </View>
-        <Text style={[styles.resultTitle, { color: Colors.success }]}>Attendance Marked!</Text>
-        <Text style={styles.resultSub}>{message}</Text>
-        <TouchableOpacity style={[styles.resultBtn, { backgroundColor: Colors.success }]} onPress={reset}>
-          <Text style={styles.resultBtnText}>Scan Another</Text>
-        </TouchableOpacity>
-      </View>
-    )
-  }
-
-  // ── Fail screen ─────────────────────────────────────────────────────
-  if (step === 'fail') {
-    return (
-      <View style={[styles.container, styles.centered, { backgroundColor: '#fef2f2' }]}>
-        <View style={styles.resultIcon}>
-          <Ionicons name="close-circle" size={72} color={Colors.danger} />
-        </View>
-        <Text style={[styles.resultTitle, { color: Colors.danger }]}>Verification Failed</Text>
-        <Text style={styles.resultSub}>{message}</Text>
-        <View style={styles.tipsBox}>
-          {['Ensure good front-facing lighting', 'Remove glasses if possible', 'Look directly at camera'].map(t => (
-            <Text key={t} style={styles.tip}>• {t}</Text>
-          ))}
-        </View>
-        <TouchableOpacity style={[styles.resultBtn, { backgroundColor: Colors.danger }]} onPress={reset}>
-          <Text style={styles.resultBtnText}>Try Again</Text>
-        </TouchableOpacity>
-      </View>
-    )
-  }
-
-  // ── Face verification screen ────────────────────────────────────────
-  if (step === 'face' || step === 'verifying') {
+  // ── IDLE ──────────────────────────────────────────────────────────────────
+  if (scanState === 'idle') {
     return (
       <View style={styles.container}>
-        <CameraView style={StyleSheet.absoluteFill} facing="front" ref={cameraRef} />
-        <View style={styles.overlay}>
-          {/* Face guide oval */}
-          <View style={styles.faceGuide} />
-          {step === 'verifying' && (
-            <Animated.View style={[styles.faceScanLine, {
-              transform: [{ translateY: scanLineAnim.interpolate({ inputRange: [0, 1], outputRange: [-80, 80] }) }]
-            }]} />
-          )}
-        </View>
-        <View style={styles.faceBottom}>
-          <Text style={styles.faceTitle}>
-            {step === 'verifying' ? 'Verifying your identity...' : 'Position your face in the oval'}
-          </Text>
-          {step === 'face' && (
-            <TouchableOpacity onPress={startFaceVerification} style={styles.captureBtn} activeOpacity={0.85}>
-              <LinearGradient colors={['#6366f1', '#8b5cf6']} style={styles.captureBtnGrad}>
-                {markMutation.isPending
-                  ? <ActivityIndicator color="white" />
-                  : <Text style={styles.captureBtnText}>Verify Face</Text>}
-              </LinearGradient>
-            </TouchableOpacity>
-          )}
-          {step === 'verifying' && <ActivityIndicator color="white" size="large" style={{ marginTop: 20 }} />}
-          <TouchableOpacity onPress={reset} style={styles.cancelBtn}>
-            <Text style={styles.cancelText}>Cancel</Text>
+        <View style={styles.center}>
+          <View style={styles.iconCircle}>
+            <Ionicons name="qr-code-outline" size={48} color={Colors.brand} />
+          </View>
+          <Text style={styles.idleTitle}>Ready to Scan</Text>
+          <Text style={styles.idleSub}>Tap the button to open camera and scan your session QR code.</Text>
+          <TouchableOpacity style={styles.startButton} onPress={startScanning} activeOpacity={0.9}>
+            <Text style={styles.startButtonText}>Open Camera</Text>
           </TouchableOpacity>
         </View>
       </View>
     )
   }
 
-  // ── QR Scanner ──────────────────────────────────────────────────────
+  // ── QR SCANNING ───────────────────────────────────────────────────────────
+  if (scanState === 'scanning') {
+    return (
+      <View style={styles.container}>
+        <CameraView
+          style={StyleSheet.absoluteFill}
+          facing="back"
+          onBarcodeScanned={handleBarCode}
+          barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
+        />
+        <View style={styles.overlay}>
+          <Text style={styles.stepLabel}>STEP 1 OF 2</Text>
+          <View style={styles.frame} />
+          <Text style={styles.hint}>Point at session QR code</Text>
+        </View>
+        <TouchableOpacity style={styles.cancelButton} onPress={() => setScanState('idle')}>
+          <Ionicons name="close" size={24} color="#fff" />
+        </TouchableOpacity>
+      </View>
+    )
+  }
+
+  // ── FACE SCAN ─────────────────────────────────────────────────────────────
+  if (scanState === 'face_ready' || scanState === 'face_verifying') {
+    const isVerifying = scanState === 'face_verifying'
+    return (
+      <View style={styles.container}>
+        <CameraView
+          ref={cameraRef}
+          style={StyleSheet.absoluteFill}
+          facing="front"
+        />
+
+        {/* Dark overlay with oval cutout effect */}
+        <View style={styles.overlay}>
+          <Text style={styles.stepLabel}>STEP 2 OF 2</Text>
+
+          {/* Face oval */}
+          <View style={[styles.faceOval, isVerifying && styles.faceOvalActive]} />
+
+          <Text style={styles.hint}>
+            {isVerifying ? 'Hold still...' : 'Position your face in the oval'}
+          </Text>
+
+          {!isVerifying && (
+            <TouchableOpacity style={styles.verifyButton} onPress={startFaceVerify} activeOpacity={0.85}>
+              <Ionicons name="scan" size={20} color="#fff" style={{ marginRight: 8 }} />
+              <Text style={styles.verifyButtonText}>Verify Face</Text>
+            </TouchableOpacity>
+          )}
+
+          {isVerifying && (
+            <View style={styles.verifyingRow}>
+              <ActivityIndicator color="#fff" style={{ marginRight: 10 }} />
+              <Text style={styles.verifyingText}>{message}</Text>
+            </View>
+          )}
+        </View>
+
+        {!isVerifying && (
+          <TouchableOpacity style={styles.cancelButton} onPress={() => setScanState('idle')}>
+            <Ionicons name="close" size={24} color="#fff" />
+          </TouchableOpacity>
+        )}
+      </View>
+    )
+  }
+
+  // ── SUCCESS / ERROR ───────────────────────────────────────────────────────
   return (
     <View style={styles.container}>
-      <CameraView
-        style={StyleSheet.absoluteFill}
-        facing="back"
-        onBarcodeScanned={handleQRScanned}
-        barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
-      />
-
-      {/* Dark overlay with hole */}
-      <View style={styles.scanOverlay}>
-        <View style={styles.scanTopMask} />
-        <View style={styles.scanMiddle}>
-          <View style={styles.scanSideMask} />
-          <View style={styles.scanWindow}>
-            {/* Corner brackets */}
-            {['topLeft', 'topRight', 'bottomLeft', 'bottomRight'].map(corner => (
-              <View key={corner} style={[styles.corner, styles[corner as keyof typeof styles] as any]} />
-            ))}
-            {/* Animated scan line */}
-            <Animated.View style={[styles.scanLine, {
-              transform: [{ translateY: scanLineAnim.interpolate({ inputRange: [0, 1], outputRange: [0, SCAN_SIZE - 4] }) }]
-            }]} />
-          </View>
-          <View style={styles.scanSideMask} />
+      <View style={styles.center}>
+        <View style={[
+          styles.resultCircle,
+          { backgroundColor: scanState === 'success' ? Colors.success + '20' : Colors.danger + '20' }
+        ]}>
+          <Ionicons
+            name={scanState === 'success' ? 'checkmark-circle' : 'close-circle'}
+            size={72}
+            color={scanState === 'success' ? Colors.success : Colors.danger}
+          />
         </View>
-        <View style={styles.scanBottomMask}>
-          <Text style={styles.scanHint}>Point at the QR code on your teacher's screen</Text>
-          <Text style={styles.scanSub}>QR refreshes every 30 seconds — scan the latest one</Text>
-        </View>
-      </View>
-
-      {/* Top bar */}
-      <View style={styles.topBar}>
-        <Text style={styles.topTitle}>Scan QR Code</Text>
+        <Text style={styles.resultTitle}>
+          {scanState === 'success' ? 'Attendance Marked!' : 'Verification Failed'}
+        </Text>
+        <Text style={styles.resultSub}>{message}</Text>
       </View>
     </View>
   )
 }
 
-const MASK_COLOR = 'rgba(0,0,0,0.65)'
-const CORNER_SIZE = 24
-const CORNER_THICKNESS = 3
-
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000' },
-  centered: { justifyContent: 'center', alignItems: 'center', padding: 32 },
-  overlay: { ...StyleSheet.absoluteFillObject, justifyContent: 'center', alignItems: 'center' },
+  center: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 32,
+    backgroundColor: Colors.bgSecondary,
+  },
+  iconCircle: {
+    width: 96,
+    height: 96,
+    borderRadius: 48,
+    backgroundColor: Colors.brand + '15',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 20,
+  },
+  idleTitle: { fontSize: 22, fontWeight: '700', color: Colors.text, marginBottom: 8 },
+  idleSub: {
+    fontSize: 14,
+    color: Colors.textSecondary,
+    textAlign: 'center',
+    lineHeight: 20,
+    marginBottom: 28,
+  },
+  startButton: {
+    backgroundColor: Colors.brand,
+    borderRadius: Radius.lg,
+    paddingVertical: 16,
+    paddingHorizontal: 40,
+  },
+  startButtonText: { color: '#fff', fontSize: 16, fontWeight: '700' },
 
-  // Camera permission
-  permTitle: { fontSize: 22, fontWeight: '800', color: Colors.text, marginTop: 20, marginBottom: 8, textAlign: 'center' },
-  permSub: { fontSize: 14, color: Colors.textSecondary, textAlign: 'center', lineHeight: 22, marginBottom: 28 },
-  permBtn: { backgroundColor: Colors.brand, paddingHorizontal: 28, paddingVertical: 14, borderRadius: Radius.xl },
-  permBtnText: { fontSize: 15, fontWeight: '700', color: 'white' },
+  overlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 20,
+  },
+  stepLabel: {
+    position: 'absolute',
+    top: 60,
+    color: 'rgba(255,255,255,0.7)',
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 1.5,
+  },
 
-  // QR scan overlay
-  scanOverlay: { ...StyleSheet.absoluteFillObject },
-  scanTopMask: { flex: 1, backgroundColor: MASK_COLOR },
-  scanMiddle: { flexDirection: 'row', height: SCAN_SIZE },
-  scanSideMask: { flex: 1, backgroundColor: MASK_COLOR },
-  scanWindow: { width: SCAN_SIZE, height: SCAN_SIZE, position: 'relative', overflow: 'hidden' },
-  scanLine: { position: 'absolute', left: 0, right: 0, height: 2, backgroundColor: Colors.brand, opacity: 0.8 },
-  scanBottomMask: { flex: 1.2, backgroundColor: MASK_COLOR, alignItems: 'center', paddingTop: 28 },
-  scanHint: { color: 'white', fontSize: 15, fontWeight: '600', textAlign: 'center', paddingHorizontal: 24 },
-  scanSub: { color: 'rgba(255,255,255,0.6)', fontSize: 12, marginTop: 8, textAlign: 'center' },
+  // QR frame
+  frame: {
+    width: 240,
+    height: 240,
+    borderWidth: 3,
+    borderColor: Colors.brand,
+    borderRadius: Radius.lg,
+    backgroundColor: 'transparent',
+  },
 
-  // Corner brackets
-  corner: { position: 'absolute', width: CORNER_SIZE, height: CORNER_SIZE },
-  topLeft: { top: 0, left: 0, borderTopWidth: CORNER_THICKNESS, borderLeftWidth: CORNER_THICKNESS, borderColor: Colors.brand },
-  topRight: { top: 0, right: 0, borderTopWidth: CORNER_THICKNESS, borderRightWidth: CORNER_THICKNESS, borderColor: Colors.brand },
-  bottomLeft: { bottom: 0, left: 0, borderBottomWidth: CORNER_THICKNESS, borderLeftWidth: CORNER_THICKNESS, borderColor: Colors.brand },
-  bottomRight: { bottom: 0, right: 0, borderBottomWidth: CORNER_THICKNESS, borderRightWidth: CORNER_THICKNESS, borderColor: Colors.brand },
+  // Face oval
+  faceOval: {
+    width: 200,
+    height: 260,
+    borderWidth: 3,
+    borderColor: 'rgba(255,255,255,0.6)',
+    borderRadius: 120,
+    backgroundColor: 'transparent',
+  },
+  faceOvalActive: {
+    borderColor: Colors.brand,
+    borderWidth: 3,
+  },
 
-  // Top bar
-  topBar: { position: 'absolute', top: 0, left: 0, right: 0, paddingTop: 60, paddingHorizontal: 24, paddingBottom: 16 },
-  topTitle: { fontSize: 20, fontWeight: '800', color: 'white', textAlign: 'center' },
+  hint: {
+    color: 'rgba(255,255,255,0.85)',
+    fontSize: 14,
+    fontWeight: '500',
+    textAlign: 'center',
+  },
 
-  // Face verification
-  faceGuide: { width: 220, height: 280, borderRadius: 110, borderWidth: 2.5, borderColor: Colors.brand, backgroundColor: 'transparent' },
-  faceScanLine: { position: 'absolute', left: '15%', right: '15%', height: 2, backgroundColor: Colors.brand, opacity: 0.8 },
-  faceBottom: { position: 'absolute', bottom: 0, left: 0, right: 0, padding: 32, alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.7)' },
-  faceTitle: { color: 'white', fontSize: 17, fontWeight: '700', marginBottom: 20, textAlign: 'center' },
-  captureBtn: { width: '100%', borderRadius: Radius.xl, overflow: 'hidden', marginBottom: 12 },
-  captureBtnGrad: { paddingVertical: 16, alignItems: 'center' },
-  captureBtnText: { color: 'white', fontSize: 16, fontWeight: '700' },
-  cancelBtn: { paddingVertical: 10 },
-  cancelText: { color: 'rgba(255,255,255,0.6)', fontSize: 14 },
+  verifyButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: Colors.brand,
+    paddingVertical: 14,
+    paddingHorizontal: 32,
+    borderRadius: Radius.lg,
+    marginTop: 8,
+  },
+  verifyButtonText: { color: '#fff', fontSize: 16, fontWeight: '700' },
 
-  // Result screens
-  resultIcon: { marginBottom: 20 },
-  resultTitle: { fontSize: 28, fontWeight: '900', marginBottom: 8, textAlign: 'center' },
-  resultSub: { fontSize: 14, color: Colors.textSecondary, textAlign: 'center', marginBottom: 24, paddingHorizontal: 24 },
-  resultBtn: { paddingHorizontal: 36, paddingVertical: 14, borderRadius: Radius.xl },
-  resultBtnText: { color: 'white', fontSize: 15, fontWeight: '700' },
-  tipsBox: { backgroundColor: 'rgba(245,158,11,0.1)', borderRadius: Radius.lg, padding: 16, marginBottom: 24, alignSelf: 'stretch' },
-  tip: { fontSize: 13, color: Colors.warning, marginBottom: 4, fontWeight: '500' },
+  verifyingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  verifyingText: { color: '#fff', fontSize: 15, fontWeight: '600' },
+
+  cancelButton: {
+    position: 'absolute',
+    top: 48,
+    right: 20,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  resultCircle: {
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 20,
+  },
+  resultTitle: { fontSize: 24, fontWeight: '700', color: Colors.text, marginBottom: 8 },
+  resultSub: { fontSize: 15, color: Colors.textSecondary, textAlign: 'center' },
+
+  permTitle: { fontSize: 20, fontWeight: '700', color: Colors.text, marginTop: 16, marginBottom: 8 },
+  permSub: { fontSize: 14, color: Colors.textSecondary, textAlign: 'center', marginBottom: 24 },
+  permButton: {
+    backgroundColor: Colors.brand,
+    borderRadius: Radius.md,
+    paddingVertical: 14,
+    paddingHorizontal: 32,
+  },
+  permButtonText: { color: '#fff', fontWeight: '700', fontSize: 15 },
 })

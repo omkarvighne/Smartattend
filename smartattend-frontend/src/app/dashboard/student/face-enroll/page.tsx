@@ -17,16 +17,36 @@ export default function FaceEnrollPage() {
   const streamRef = useRef<MediaStream | null>(null)
 
   const enrollMutation = useMutation({
-    mutationFn: () => {
-      // In production: extract embeddings from captured images via DeepFace
-      const mockEmbedding = Array.from({ length: 512 }, () => Math.random() * 2 - 1)
-      return studentsApi.faceEnroll(mockEmbedding).then(r => r.data)
+    mutationFn: async () => {
+      for (const dataUrl of captures) {
+        const res = await fetch(dataUrl)
+        const blob = await res.blob()
+        const file = new File([blob], 'face.jpg', { type: 'image/jpeg' })
+  
+        const formData = new FormData()
+        formData.append('file', file)
+  
+        const token = localStorage.getItem('access_token')
+        const response = await fetch(
+          `${process.env.NEXT_PUBLIC_API_URL}/api/v1/attendance/face/enroll`,
+          {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}` },
+            body: formData,
+          }
+        )
+  
+        if (!response.ok) {
+          const err = await response.json()
+          throw new Error(err.detail ?? 'Enrollment failed')
+        }
+      }
     },
     onSuccess: () => {
       setCurrentStep(2)
       toast.success('Face enrolled successfully!')
     },
-    onError: () => toast.error('Enrollment failed. Please try again.'),
+    onError: (err: any) => toast.error(err.message ?? 'Enrollment failed. Please try again.'),
   })
 
   const startCamera = async () => {

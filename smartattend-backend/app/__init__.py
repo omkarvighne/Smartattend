@@ -1,1 +1,1 @@
-# app package
+# SmartAttend AI Backend
